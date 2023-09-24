@@ -1,15 +1,28 @@
 <?php 
+//v0.3
 //state 0=ready; 1=deploy; 2=unknown; 3=finished; 4=error?;  5=canceled; 
 chdir(__DIR__);
 include('../inc/includes.php');
+$config = new PluginGlpiinventoryConfig();
 
-$maxWakeUp   = 10;
-// $maxWakeUp   = $config->getValue('wakeup_agent_max');
-$iIPv4Only = true;
-$iConnectTimeout = 2;
-$iTimeout = 4;
-$iLoop = true;
-$iScriptTime = 50;
+////////////////////////////////////////////////////////////
+//Maximum deployment tasks.
+$maxWakeUp   = 5; 
+//Get maximum deployment tasks from GLPI config (uncomment to enable).
+// $maxWakeUp   = $config->getValue('wakeup_agent_max');  
+//Send request to IPv4 only addreses of agent. 
+$iIPv4Only = true; 
+//cURL connect timeout
+$iConnectTimeout = 2; 
+//cURL total timeout
+$iTimeout = 4;  
+//Limit script execution time.
+$iScriptTime = 55; 
+//Aggressive deployment. Good for short packages. 
+$iShortDeploys = False; 
+////////////////////////////////////////////////////////////
+
+global $DB;
 
 function is_ip($str,$ipv4) {
     $ret = filter_var($str, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4);
@@ -17,16 +30,8 @@ function is_ip($str,$ipv4) {
     return $ret;
 }
 
-global $DB;
-$config = new PluginGlpiinventoryConfig();
-$agent  = new Agent();
-
-echo 'Max wakeup: '.$maxWakeUp.'  ';
-$iStart = microtime(true);
-
-do {   //global loop
-
-$iterator = $DB->request([ 
+function cDeploy() { //count of deploying agents
+$req = $GLOBALS['DB']->request([ 
          'SELECT' => ['agents_id'],
          'FROM'   => 'glpi_plugin_glpiinventory_taskjobstates',
          'WHERE'  => [
@@ -35,9 +40,13 @@ $iterator = $DB->request([
 		    ],
 		'GROUPBY' => ['agents_id']
         ]);
-$iDeploy = count($iterator);
-echo 'Deploying: '.$iDeploy.'  ';
 
+return count($req);
+}
+
+$agent  = new Agent();
+echo 'Max wakeup: '.$maxWakeUp.'  ';
+$iStart = microtime(true); // Script timer
 $iterator = $DB->request([
          'SELECT' => ['agents_id'],
          'FROM'   => 'glpi_plugin_glpiinventory_taskjobstates',
@@ -47,56 +56,60 @@ $iterator = $DB->request([
 		    ],
 		'GROUPBY' => ['agents_id']
         ]);
+// List of agents
+$iStack= array();
+foreach ($iterator as $res)   {   array_push( $iStack , $res['agents_id'] );  }
 
-$iTotal = count($iterator);
-echo 'Total: '.$iTotal.'  ';
-
+$iDeploy = cDeploy();
+echo 'Deploying now agents: '.$iDeploy.'  ';
+$iTotal = count($iStack);
+echo 'Total prepared agents: '.$iTotal.'  ';
 $iFree=$maxWakeUp-$iDeploy;
-echo 'Free: '.$iFree.'  ';
-
+echo 'Free slots: '.$iFree.'  ';
 $iCount = min(($maxWakeUp-$iDeploy),$iTotal);
 echo 'Count to wake: '.$iCount.'  ';
-
 if ($iCount<=0) { exit;}
 
-$iStack= array();
 
-//list of agents
-foreach ($iterator as $res) 
-    {   array_push( $iStack , $res['agents_id'] );  }
 echo "\r\n";
 
+if (count($iStack)==0) {  echo "No Agents."; exit; }
 
-$iRand = array_rand($iStack ,$iCount);
+$iOK = 0; //Count of awakened by script agents
+shuffle($iStack);
 
-        foreach ($iRand as $res)
+foreach ($iStack as $res)
 	    {
-	    echo 	'id: '.$iStack[$res]."\r\n";
+	    echo 	'id: '.$res."\r\n";
 	    flush();
 	     $ch = curl_init();
-	     $agent->getFromDB($iStack[$res]);
+	     $agent->getFromDB($res);
 	     $addrs = $agent->getAgentURLs();
 	     foreach ($addrs as $addr) 
 			{
 			if (is_ip(parse_url($addr, PHP_URL_HOST),$iIPv4Only)and(parse_url($addr, PHP_URL_SCHEME)=='http')) 
 			    {
+				echo 'Addr: '.$addr."\r\n"; flush();
 				curl_setopt($ch, CURLOPT_URL, $addr.'/now');
 				curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, $iConnectTimeout);
 				curl_setopt($ch, CURLOPT_TIMEOUT, $iTimeout);
-				curl_setopt($ch, CURLOPT_RETURNTRANSFER, true); //return True or False
+				curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
 				$iRes=curl_exec($ch);
-				echo 'Addr: '.$addr."\r\n";		    
-				if ($iRes) { echo "Agent OK\r\n"; break; } 
+				if ($iRes) { $iOK++ ; echo "Agent OK\r\n"; break; } 
 			    }
 			}
 	    curl_close($ch);
+	    echo "\r\nFree solts left: ".(  $maxWakeUp-$iDeploy-$iOK ) ."\r\n" ; 
 	    echo "\r\n";
 	    flush();
-	    if ((microtime(true)-$iStart)>=$iScriptTime ) {echo "Script time limit.\r\n"; break; }
 
+	    if ( (($maxWakeUp-$iDeploy-$iOK)<=0 ) and $iShortDeploys  )   
+		    { sleep(3);  $iOK = 1;   $iDeploy = cDeploy();   }
+
+	    if ( ($maxWakeUp-$iDeploy-$iOK)<=0 ) 
+		    {echo "No free slots. \r\n"; break;}
+	    if ((microtime(true)-$iStart)>=$iScriptTime ) {echo "Script time limit.\r\n"; break; }
 	    }
-	    if ($iLoop) { sleep(2); }
-}   while (((microtime(true)-$iStart)<$iScriptTime )and($iLoop == true)); //enf of global loop
 
 echo 'END.';
 ?>
