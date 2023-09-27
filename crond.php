@@ -1,5 +1,5 @@
 <?php 
-//v0.3
+//v0.4
 //state 0=ready; 1=deploy; 2=unknown; 3=finished; 4=error?;  5=canceled; 
 chdir(__DIR__);
 include('../inc/includes.php');
@@ -8,25 +8,61 @@ $config = new PluginGlpiinventoryConfig();
 ////////////////////////////////////////////////////////////
 //Maximum deployment tasks.
 $maxWakeUp   = 5; 
-//Get maximum deployment tasks from GLPI config (uncomment to enable).
+// Get maximum deployment tasks from GLPI config.
 // $maxWakeUp   = $config->getValue('wakeup_agent_max');  
-//Send request to IPv4 only addreses of agent. 
+// Send request to IPv4 only addreses of agent.
 $iIPv4Only = true; 
-//cURL connect timeout
+// cURL ConnectTimeout
 $iConnectTimeout = 2; 
-//cURL total timeout
+// cURL timeout
 $iTimeout = 4;  
-//Limit script execution time.
+// Limit script execution time.
 $iScriptTime = 55; 
-//Aggressive deployment. Good for short packages. 
+// Aggressive deployment. Good for short packages. 
 $iShortDeploys = False; 
+// Array of black list IPv4 and subnets
+// Example:
+// $IPBL=['10.1.1.25' , '192.168.*.*' , '169.254.*.*']
+$IPBL = ['169.254.*.*'];
 ////////////////////////////////////////////////////////////
 
 global $DB;
 
+
+function IPcomp($IP,$IPBlackList)
+{
+
+$rs=false;
+foreach($IPBlackList as $ipbl){
+ $ip1 = str_replace("*", "0", $ipbl);
+ $ip2 = str_replace("*", "255", $ipbl);
+
+
+ $ip1 = ip2long($ip1);
+ $ip2 = ip2long($ip2);
+ $givenip = ip2long($IP);
+
+ if (($givenip >= $ip1)
+    && ($ip2 >= $givenip)
+    )
+        { $rs = true; break; }
+}
+return $rs;
+}
+
+
 function is_ip($str,$ipv4) {
+    global $IPBL;
     $ret = filter_var($str, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4);
-    if (!$ipv4) {$ret=true;}
+
+    if ($ret)   {
+		$ret=!IPcomp($str,$IPBL);    
+		}
+    else
+		{
+                if (!$ipv4)  {$ret=true;}
+		}
+
     return $ret;
 }
 
